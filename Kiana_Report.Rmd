@@ -1,0 +1,391 @@
+---
+title: "report_analysis"
+author: ''
+date: '2022-07-29'
+output:
+  html_document:
+    toc: yes
+    toc_depth: '4'
+    df_print: paged
+  output:
+  bookdown::pdf_document2:
+    fig_caption: yes
+    keep_tex: yes
+    latex_engine: pdflatex
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+  pdf_document:
+    toc: yes
+    number_sections: yes
+    toc_depth: '4'
+  word_document:
+    toc: yes
+    toc_depth: '4'
+header-includes:
+- \usepackage{float}
+- \usepackage{setspace}
+- \doublespacing
+- \usepackage{bm}
+- \usepackage{amsmath}
+- \usepackage{amssymb}
+- \usepackage{amsfonts}
+- \usepackage{amsthm}
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhf{}
+- \rhead{George Quaye}
+- \lhead{Article Report}
+- \cfoot{\thepage}
+- \usepackage{algorithm}
+- \usepackage[noend]{algpseudocode}
+fig_caption: yes
+geometry: margin = 0.8in
+fontsize: 10pt
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message= F, warning=FALSE, echo=FALSE}
+library(tidyverse)
+library("imputeTS")
+library(ncvreg)
+library(glmnet)
+library(verification)
+library(logistf)
+library(OptimalCutpoints)
+library("factoextra")
+library("kableExtra")
+library(MASS)
+library(mixOmics)
+library(dplyr)
+library(patchwork)
+library(rstatix)
+library(ggpubr)
+```
+
+# Methodology
+
+In this work, four datasets—a training set, three test sets, including a thaw freeze, SOP, and fasting—were utilized. There are 183 observations and 12158 variables (VOCs) in the training set. This results in an unbalanced, high-dimensional problem because there are 53 PCa negatives and 130 PCa positives. In order to improve the efficiency of the study, VOCs that could be detected in less than 3% of the population overall were initially removed. The remaining variables (VOCs) were screened by comparing each VOC between the PCa-positive and control groups. For this screening, the Wilcoxon rank-sum test was employed since many VOCs show zero inflation. A liberal cutoff of 0.2 was utilized as the P-values during the Wilcoxon rank-sum screening to determine which VOCs are significant. An elastic net regression model was created using 10 folds cross-validation to find the best parameters for the chosen set of VOCs. The generated model was then applied to predict the thaw freeze, SOP, and fasting time data sets in order to derive probability scores for every possible combination of temperature, sample , and duration under study. For each thaw, SOP, and fasting, we now determine the effect of the study parameters on the probability scores. Gamma regression was utilized for the SOP and fasting time since probability scores obtained were significantly skewed. The zero-inflated beta regression was used during the thaw freeze because its probability scores were zero-inflated.
+
+
+
+# Results
+
+There were 927 variables (VOCs) that were significant after the univariate screening. Through the use of elastic net regression and these VOCs, the model was trained, and the resulting train AUC was 0.9707. The test files were successfully predicted with the trained model, and the probabilities and additional analysis were performed as follows;
+
+## SOP data file
+```{r, echo=FALSE}
+#laoding in predicted datasets
+load("predicted_data.RData")
+SOP_data<- final_data_SOP %>% 
+  rename(score = SOP_score, Response = SOP_Response)
+```
+
+```{r Subsetting the final data with probability scores ,echo=FALSE}
+data_mea<- SOP_data%>%
+  dplyr::select(Label, score)### selecting required columns for further analysis
+```
+
+```{r,echo=FALSE}
+#Splitting the row labels to obtain the required parameter vales under study
+data_measure<- tidyr::separate(
+  data_mea,
+  Label,
+  c("SOP","Temperature", "Duration", "Sample"),
+  sep = "_",
+  remove = TRUE,
+  convert = FALSE,
+  extra = "warn",
+  fill = "warn",)
+
+kbl(head(data_measure)) %>%
+  kable_classic_2(full_width = F)
+```
+
+```{r,echo=FALSE}
+#Subsetting required columns
+data_measure1<- data_measure %>%
+  dplyr::select(-SOP) %>%
+  relocate(score, .before = Temperature) %>%
+  mutate(across(c(Temperature,Duration,Sample),as.factor))%>%
+  na_replace(0)
+
+str(data_measure1)
+```
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
+#graphing to check the distribution of variable
+library(patchwork)
+a<- data_measure1 %>% 
+  ggplot(aes(score))+
+         geom_density()+
+  ggtitle("Check for Normality of score")+
+  theme_classic()
+
+b<- data_measure1 %>% 
+  ggplot(aes(x= Temperature, y = score))+
+  geom_boxplot()+
+  theme_classic()
+
+c<-data_measure1 %>% 
+  ggplot(aes(x= Duration, y = score))+
+  geom_boxplot()+
+  theme_classic()
+
+d<- data_measure1 %>% 
+  ggplot(aes(x= Sample, y = score ))+
+  geom_boxplot()+
+  theme_classic()
+
+(a+b) / (c+d)
+```
+
+The probability score is not normally distributed, as shown by the distribution plot. In other words, it is heavily left-skewed. The plots of duration and sample can also be used to infer that there is some effect on scores, but further investigation is necessary to validate this. Therefore, the response score was log-transformed and the transformed scores were used for further assertion.
+
+```{r transformation, echo= FALSE, message=FALSE, warning=FALSE}
+new_score<- log10(max(data_measure1$score +1) - data_measure1$score)
+
+dat0<- data_measure1%>%
+  mutate(score= new_score)
+
+dat0[dat0$score== 0, ]<- 0.0001
+
+ggplot(dat0, aes(score))+geom_density()+theme_classic()
+```
+
+The response still seemed to be very positive skewed after the log transformation. As a result, the generalized linear model with gamma regression was employed.
+
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+#modelling 
+gamma_model<- glm(score ~Temperature*Sample*Duration, data = dat0, family= Gamma(link = "inverse"))
+
+tidy(Anova(gamma_model))
+```
+
+Given that their p-values are more than 0.05, the result shows that only sample and duration have a significant impact on the probability scores obtained. However, there is no significant interaction between these two important parameters.
+
+
+<!-- ```{r} -->
+<!-- library(broom) -->
+<!-- model_metric<- augment(gamma_model) -->
+
+<!-- data_diag<-model_metric %>%  -->
+<!--   mutate(index = .rownames)  -->
+
+
+<!-- #(a) (Check for Normality of residuals) -->
+<!-- a<- ggplot(data_diag, aes(.resid))+ -->
+<!--          geom_histogram()+ -->
+<!--   ggtitle("Check for Normality of residuals") -->
+
+<!--  # check for homogeneity -->
+<!-- b<-ggplot(data_diag, aes(.fitted, .resid))+ -->
+<!--          geom_line()+ -->
+<!--          labs(x= "Fitted", y = "Residual")+ -->
+<!--   ggtitle("Check for Homoscedasticity") -->
+
+<!-- # check for independent -->
+<!-- c<-ggplot(data_diag, aes(index,.resid))+ -->
+<!--          geom_point()+ -->
+<!--          labs(x= "index", y = "Residual")+ -->
+<!--   ggtitle("Check for Independence ") -->
+
+<!-- # check for Linearity -->
+<!-- d<-ggplot(data_diag, aes(.fitted, .resid))+ -->
+<!--          geom_point()+ -->
+<!--          labs(x= "Fitted", y = "Residual")+ -->
+<!--   ggtitle("Check for Linearity") -->
+
+<!-- (a+b)/ (c+d) -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- par(mfrow = c(2,2)) -->
+<!-- plot(gamma_model) -->
+<!-- ``` -->
+
+
+##    Fasting time data
+```{r, echo=FALSE}
+#loading already predicted fasting time data
+fast_data<- final_data_fast %>% 
+  rename(score = fast_score, Response = fast_Response)
+```
+
+```{r,echo=FALSE}
+#Subsetting the final data with probability scores
+data_mea<- fast_data%>%
+  dplyr::select(Label, score)### selecting required columns for further analysis
+```
+
+```{r,echo=FALSE}
+### Splitting the row labels to obtain the required parameter vales under study
+data_measure<- tidyr::separate(
+  data_mea,
+  Label,
+  c("SOP","Temperature", "Duration", "Sample"),
+  sep = "_",
+  remove = TRUE,
+  convert = FALSE,
+  extra = "warn",
+  fill = "warn",)
+
+kbl(head(data_measure)) %>%
+  kable_classic_2(full_width = F)
+```
+
+```{r ,echo=FALSE}
+#Subsetting required columns
+data_measure1<- data_measure %>%
+  dplyr::select(-SOP) %>%
+  relocate(score, .before = Temperature) %>%
+  mutate(across(c(Temperature,Duration,Sample),as.factor))%>%
+  na_replace(0)
+
+str(data_measure1)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#graphing to check the distribution of variable
+#library(patchwork)
+a<- data_measure1 %>% 
+  ggplot(aes(score))+
+         geom_density()+
+  ggtitle("Check for normality of score")+
+  theme_classic()
+
+b<- data_measure1 %>% 
+  ggplot(aes(x= Temperature, y = score))+
+  geom_boxplot()+
+  theme_classic()
+
+c<-data_measure1 %>% 
+  ggplot(aes(x= Duration, y = score))+
+  geom_boxplot()+
+  theme_classic()
+
+d<- data_measure1 %>% 
+  ggplot(aes(x= Sample, y = score ))+
+  geom_boxplot()+
+  theme_classic()
+
+(a+b) / (c+d)
+```
+
+The probability score is not normally distributed, as shown by the distribution plot. In other words, it is heavily left-skewed. The plot sample can also be used to infer it has some effect on scores, but further investigation is necessary to validate this. Therefore, the response score was log-transformed and the transformed scores were used for further assertion.
+
+```{r, echo= FALSE}
+#tranforming the response
+new_score<- log10(max(data_measure1$score +1) - data_measure1$score)
+
+data_mix<- data_measure1%>%
+  mutate(score= new_score)
+data_mix[data_mix$ score== 0, ]<- 0.0001
+
+ggplot(data_mix, aes(score))+geom_density()+theme_classic()
+```
+
+The response still seemed to be very positive skewed after the log transformation. As a result, the generalized linear model with gamma regression was employed under this study too.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+gamma_fast<- glm(score+1~ Temperature*Duration*Sample, data = data_mix, family= Gamma(link = "inverse"))
+tidy((Anova(gamma_fast)))
+```
+
+All variables seemed to be statistically insignificant, meaning they had no discernible impact on the probability scores.
+
+
+## Thaw freeze data file
+```{r , echo=FALSE}
+#loading in the predicted data
+thaw_data<- final_data_thaw %>% 
+  rename(score = thaw_score, Response= thaw_Response)
+```
+
+```{r ,echo=FALSE}
+#Subsetting the final data with probability scores
+data_mea<- thaw_data%>%
+  dplyr::select(Label, score)
+```
+
+```{r ,echo=FALSE}
+#Splitting the row labels to obtain the required parameter vales under study
+
+data_measure<- tidyr::separate(
+  data_mea,
+  Label,
+  c("SOP","Temperature", "Duration", "Sample"),
+  sep = "_",
+  remove = TRUE,
+  convert = FALSE,
+  extra = "warn",
+  fill = "warn",)
+
+kbl(head(data_measure)) %>%
+  kable_classic_2(full_width = F)
+```
+
+```{r ,echo=FALSE}
+#Subsetting required columns 
+data_measure1<- data_measure %>%
+  dplyr::select(-SOP) %>%
+  relocate(score, .before = Temperature) %>%
+  mutate(across(c(Temperature,Duration,Sample),as.factor))%>%
+  na_replace(0)
+
+str(data_measure1)
+```
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
+#graphing to check the distribution of variable
+#library(patchwork)
+a<- data_measure1 %>% 
+  ggplot(aes(score))+
+         geom_density()+
+  ggtitle("Check for normality of score")+ theme_classic()
+
+b<- data_measure1 %>% 
+  ggplot(aes(x= Temperature, y = score))+
+  geom_boxplot()+
+  theme_classic()
+
+c<-data_measure1 %>% 
+  ggplot(aes(x= Duration, y = score))+
+  geom_boxplot()+
+  theme_classic()
+
+d<- data_measure1 %>% 
+  ggplot(aes(x= Sample, y = score ))+
+  geom_boxplot()+
+  theme_classic()
+
+(a+b) / (c+d)
+```
+
+High right skewedness and zero inflation can be seen in the plot of the score distribution. The predictors' plots cannot be used to draw any firm conclusions. The beta zero-inflated regression model is acceptable in this situation since the response is zero-inflated and lies between 0 and 1. The beta zero-inflated model was carried out through the 'gamlss' package in R. The zero-inflated beta model essentially consists of three parts: Mu, which describes the beta distribution's mean for the interval (0,1); Sigma, which depicts the beta distribution's precision; and Nu, which depicts the model's Bernoulli distribution and the likelihood of observing a zero value.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(gamlss)
+mod <- gamlss(formula = score ~., nu.formula = score~.,family = BEINF0(mu.link = "logit", sigma.link = "logit", nu.link = "log" ), data = data_measure1, trace = F)
+
+summary(mod)
+```
+
+Only sample appears to be statistically significant under the beta distribution's mean for the interval (0,1). Under other components and paramters in study all appears to be insignificant.
+
+```{r residual plot}
+plot(mod)
+```
+The beta zero-inflated model's residual plot shows that not all of the presumptions are completely voilated.
+
+
+
+
+
+
+
+
+
