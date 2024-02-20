@@ -3,7 +3,7 @@
 # install.packages("car")
 # install.packages("robustbase")
 
-setwd("/media/wsadmin/My Passport/Kiana/2022.07.29/")
+setwd(dirname(rstudioapi::getSourceEditorContext()$path)) 
 
 set.seed(1)
 

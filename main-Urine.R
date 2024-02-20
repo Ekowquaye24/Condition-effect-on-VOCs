@@ -3,7 +3,7 @@
 # install.packages("car")
 # install.packages("robustbase")
 
-#setwd("Desktop/Final Research Data/SOP/SOP Analyses/function_Pokojovy")
+
 setwd(dirname(rstudioapi::getSourceEditorContext()$path)) 
 
 set.seed(1)
